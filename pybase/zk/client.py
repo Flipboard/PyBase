@@ -36,6 +36,7 @@ znode = "/hbase"
 # quorum. It then asks ZK for the location of the MetaRegionServer,
 # returning a tuple containing (host_name, port).
 def LocateMaster(zkquorum, establish_connection_timeout=5, missing_znode_retries=5, zk=None):
+    znode_found = True
 
     if zk is None:
         # Using Kazoo for interfacing with ZK
@@ -50,13 +51,28 @@ def LocateMaster(zkquorum, establish_connection_timeout=5, missing_znode_retries
         rsp, znodestat = zk.get(znode + "/meta-region-server")
     except NoNodeError:
         if missing_znode_retries == 0:
-            raise ZookeeperZNodeException(
-                "ZooKeeper does not contain meta-region-server node.")
-        logger.warn("ZooKeeper does not contain meta-region-server node. Retrying in 2 seconds. "
-                    "(%s retries remaining)", missing_znode_retries)
-        sleep(2.0)
-        return LocateMaster(zkquorum, establish_connection_timeout=establish_connection_timeout,
-                            missing_znode_retries=missing_znode_retries - 1, zk=zk)
+            znode_found = False
+        else:
+            logger.warn("ZooKeeper does not contain meta-region-server node. Retrying in 2 seconds. "
+                        "(%s retries remaining)", missing_znode_retries)
+            sleep(2.0)
+            return LocateMaster(zkquorum, establish_connection_timeout=establish_connection_timeout,
+                                missing_znode_retries=missing_znode_retries - 1, zk=zk)
+
+    # Hortonworks
+    if not znode_found:
+        try:
+            rsp, znodestat = zk.get("/hbase-unsecure/meta-region-server")
+        except NoNodeError:
+            if missing_znode_retries == 0:
+                raise ZookeeperZNodeException(
+                    "ZooKeeper does not contain meta-region-server node.")
+            logger.warn("ZooKeeper does not contain meta-region-server node. Retrying in 2 seconds. "
+                        "(%s retries remaining)", missing_znode_retries)
+            sleep(2.0)
+            return LocateMaster(zkquorum, establish_connection_timeout=establish_connection_timeout,
+                                missing_znode_retries=missing_znode_retries - 1, zk=zk)
+
     # We don't need to maintain a connection to ZK. If we need it again we'll
     # recreate the connection. A possible future implementation can subscribe
     # to ZK and listen for when RegionServers go down, then pre-emptively
