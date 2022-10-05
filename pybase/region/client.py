@@ -123,7 +123,7 @@ class Client(object):
                 my_id = self.call_id
                 self.call_id += 1
             else:
-                logger.warning('Lock timeout %s RPC to %s:%s' % (rq.type, self.host, self.port))
+                logger.warning('Lock timeout %s RPC to %s:%s', rq.type, self.host, self.port)
                 raise RegionServerException(region_client=self)
         serialized_rpc = rq.pb.SerializeToString()
         header = RequestHeader()
@@ -151,8 +151,8 @@ class Client(object):
                                  rq.type, self.host, self.port, pool_id)
                     self.sock_pool[pool_id].send(to_send)
                 else:
-                    logger.warning('Lock timeout sending %s RPC to %s:%s on pool port %s' %
-                                   (rq.type, self.host, self.port, pool_id))
+                    logger.warning('Lock timeout sending %s RPC to %s:%s on pool port %s',
+                                   rq.type, self.host, self.port, pool_id)
                     raise RegionServerException(region_client=self)
         except socket.error:
             # RegionServer dead?
@@ -194,8 +194,8 @@ class Client(object):
                     except socket.error:
                         raise RegionServerException(region_client=self)
                 else:
-                    logger.warning('Lock timeout receive %s RPC to %s:%s on pool port %s' %
-                                   (rq.type, self.host, self.port, pool_id))
+                    logger.warning('Lock timeout receive %s RPC to %s:%s on pool port %s',
+                                   rq.type, self.host, self.port, pool_id)
                     raise RegionServerException(region_client=self)
         # Pass in the full data as well as your current position to the
         # decoder. It'll then return two variables:
@@ -245,8 +245,7 @@ class Client(object):
     def _bad_call_id(self, my_id, my_request, msg_id, data, lock_timeout=10):
         with acquire_timeout(self.missed_rpcs_lock, lock_timeout) as acquired:
             if acquired:
-                logger.debug(
-                    "Received invalid RPC ID. Got: %s, Expected: %s.", msg_id, my_id)
+                logger.debug("Received invalid RPC ID. Got: %s, Expected: %s.", msg_id, my_id)
                 self.missed_rpcs[msg_id] = data
                 self.missed_rpcs_condition.notifyAll()
                 while my_id not in self.missed_rpcs:
@@ -256,7 +255,7 @@ class Client(object):
                 new_data = self.missed_rpcs.pop(my_id)
                 logger.debug("Another thread found my RPC! RPC ID: %s", my_id)
             else:
-                logger.warning('Lock timeout bad_call to %s:%s' % (self.host, self.port))
+                logger.warning('Lock timeout bad_call to %s:%s', self.host, self.port)
                 raise RegionServerException(region_client=self)
         return self._receive_rpc(my_id, my_request, data=new_data)
 
