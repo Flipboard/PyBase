@@ -134,8 +134,8 @@ class MasterServerException(PyBaseException):
             try:
                 # Makes sure someone else hasn't already fixed the issue.
                 if main_client.master_client is None or \
-                        (self.host == main_client.master_client.host and
-                         self.port == main_client.master_client.port):
+                        (self.host == main_client.master_client.host
+                         and self.port == main_client.master_client.port):
                     logger.warning(
                         "Encountered an exception with the Master server. "
                         "Sleeping then reestablishing."

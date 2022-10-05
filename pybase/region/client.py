@@ -192,7 +192,6 @@ class Client(object):
                         full_data = self._recv_n(
                             self.sock_pool[pool_id], msg_length)
                     except socket.error:
-                        logger.critical("\nexcept socket.error in _receive_rpc\n")
                         raise RegionServerException(region_client=self)
                 else:
                     logger.warning('Lock timeout receive %s RPC to %s:%s on pool port %s',
