@@ -294,7 +294,7 @@ def NewClient(host, port, pool_size, secondary=False):
         c.pool_size = pool_size
         for x in range(pool_size):
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((host, int(port)))
+            s.connect((c.host, int(port)))
             _send_hello(s)
             s.settimeout(2)
             c.sock_pool.append(s)
