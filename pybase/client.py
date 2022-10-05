@@ -387,7 +387,6 @@ class MainClient(object):
                 # hosted on.
                 server_loc = cell.value
                 host, port = cell.value.split(b':')
-                host = host.decode("utf-8")
             else:
                 continue
         # Do we have an existing client for this region server already?

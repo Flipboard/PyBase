@@ -64,8 +64,8 @@ class Client(object):
     #   we can match incoming responses with the rpc that made the request.
 
     def __init__(self, host, port, secondary):
-        self.host = host
-        self.port = port
+        self.host = host.decode('utf8') if isinstance(host, bytes) else host
+        self.port = port.decode('utf8') if isinstance(port, bytes) else port
         self.pool_size = 0
         # We support connection pools so have lists of sockets and read/write
         # mutexes on them.
