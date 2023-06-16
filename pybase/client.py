@@ -18,6 +18,7 @@ from __future__ import absolute_import, print_function, unicode_literals
 import logging
 from builtins import str
 from itertools import chain
+import sys
 from threading import Condition, Lock
 
 import pybase.region.client as region
@@ -37,6 +38,8 @@ from .region.region import region_from_cell
 from .request import request
 
 logger = logging.getLogger(__name__)
+
+max_recursion_depth = sys.getrecursionlimit()
 
 
 class MainClient(object):
@@ -146,7 +149,7 @@ class MainClient(object):
         HERE LAY REQUESTS
     """
 
-    def get(self, table, key, families={}, filters=None):
+    def get(self, table, key, families={}, filters=None, call_number=0):
         """
         get a row or specified cell with optional filter
         :param table: hbase table
@@ -154,6 +157,7 @@ class MainClient(object):
         :param families: (optional) specifies columns to get,
           e.g., {"columnFamily1":["col1","col2"], "colFamily2": "col3"}
         :param filters: (optional) column filters
+        :param call_number: (optional) count of recursion stack
         :return: response with cells
         """
         try:
@@ -180,7 +184,10 @@ class MainClient(object):
             # which region or region_client it needs to reestablish.
             e._handle_exception(self, dest_region=dest_region)
             # Everything should be dandy now. Repeat the request!
-            return self.get(table, key, families=families, filters=filters)
+            call_number += 1
+            if call_number > max_recursion_depth:
+                raise Exception
+            return self.get(table, key, families=families, filters=filters, call_number=call_number)
 
     def put(self, table, key, values):
         return self._mutate(table, key, values, request.put_request)
