@@ -409,24 +409,43 @@ class MainClient(object):
 
     def _discover_region(self, table, key):
         meta_key = self._construct_meta_key(table, key)
-        # Create the appropriate meta request given a meta_key.
+        # Try closest_row_before Get first (HBase 1.x). If it fails with an
+        # unrecognized remote exception (HBase 2.0+ removed it, HBASE-20237),
+        # fall back to a reverse Scan which achieves the same semantics.
         meta_rq = request.master_request(meta_key)
         try:
-            # This will throw standard Region/RegionServer exceptions.
-            # We need to catch them and convert them to the Master equivalent.
             response = self.master_client._send_request(meta_rq)
         except (AttributeError, RegionServerException, RegionException):
             if self.master_client is None:
-                # I don't know why this can happen but it does.
                 raise MasterServerException(None, None, secondary=self.secondary)
             raise MasterServerException(
                 self.master_client.host, self.master_client.port, secondary=self.secondary)
+        except PyBaseException:
+            # closest_row_before not supported (HBase 2.0+); retry with reverse scan
+            logger.info("closest_row_before failed, falling back to reverse scan for meta lookup")
+            meta_rq = request.master_request_scan(meta_key)
+            try:
+                response = self.master_client._send_request(meta_rq)
+            except (AttributeError, RegionServerException, RegionException):
+                if self.master_client is None:
+                    raise MasterServerException(None, None, secondary=self.secondary)
+                raise MasterServerException(
+                    self.master_client.host, self.master_client.port, secondary=self.secondary)
         # Master gave us a response. We need to run and parse the response,
         # then do all necessary work for entering it into our structures.
         return self._create_new_region(response, table)
 
     def _create_new_region(self, response, table):
-        cells = response.result.cell
+        # Handle both GetResponse (closest_row_before, HBase 1.x) and
+        # ScanResponse (reverse scan fallback, HBase 2.0+).
+        if hasattr(response, 'results'):
+            # ScanResponse: cells are in results[0].cell
+            if len(response.results) == 0:
+                raise NoSuchTableException("Table does not exist.")
+            cells = response.results[0].cell
+        else:
+            # GetResponse: cells are in result.cell
+            cells = response.result.cell
         # We have a valid response but no cells? Apparently that means the
         # table doesn't exist!
         if len(cells) == 0:

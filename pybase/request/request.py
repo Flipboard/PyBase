@@ -31,6 +31,23 @@ def master_request(meta_key):
     return Request(b"Get", rq)
 
 
+def master_request_scan(meta_key):
+    # HBase 2.0+ removed getClosestRowBefore (HBASE-20237).
+    # Use a reverse scan limited to 1 row to achieve the same semantics.
+    if isinstance(meta_key, str):
+        meta_key = meta_key.encode('utf8')
+    rq = ScanRequest()
+    rq.region.type = 1
+    rq.region.value = metaTableName
+    rq.number_of_rows = 1
+    rq.close_scanner = True
+    rq.scan.column.extend(families_to_columns(metaInfoFamily))
+    rq.scan.start_row = meta_key
+    rq.scan.reversed = True
+    rq.scan.caching = 1
+    return Request(b"Scan", rq)
+
+
 def get_request(region, key, families, filters):
     pbFilter = _to_filter(filters)
     rq = GetRequest()
