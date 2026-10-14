@@ -40,10 +40,13 @@ from .request import request
 
 logger = logging.getLogger(__name__)
 
-# Retries are bounded because these requests used to retry by recursing: each
-# failed attempt kept its frame, row values and built request alive, so a row
-# that never succeeds exhausted memory long before Python's recursion limit.
-MAX_REQUEST_ATTEMPTS = 10
+# The loop below rebinds each attempt's request, so retrying costs no memory and
+# this bound exists only to stop a permanently failing row spinning forever. Keep
+# it well above the handful of attempts a region reconnect needs: _handle_exception
+# reestablishes the client without sleeping, so a connection broken mid-write is
+# recovered by retrying, and too low a bound turns a recoverable broken pipe into
+# a failed write.
+MAX_REQUEST_ATTEMPTS = 100
 
 
 class MainClient(object):

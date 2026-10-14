@@ -101,6 +101,47 @@ class TestRequestRetryBounds(unittest.TestCase):
         finally:
             gc.enable()
 
+    def test_retrying_does_not_accumulate_memory(self):
+        """Attempts must cost no memory, so the bound can be set for time alone.
+
+        The recursive implementation kept every attempt's request alive at once,
+        which is what exhausted the container. A loop frees each attempt as the
+        next one begins, so raising the bound to survive a reconnect is free.
+        """
+        built = []
+
+        class FakeRequest(object):
+            def __init__(self):
+                self.payload = bytearray(1_000_000)
+
+        def rq_type(region, key, values):
+            request = FakeRequest()
+            built.append(weakref.ref(request))
+            return request
+
+        class FakeRegionClient(object):
+            def _send_request(self, rq):
+                raise RecoverableException('broken pipe')
+
+        class FakeRegion(object):
+            region_client = FakeRegionClient()
+
+        self.client._find_hosting_region = lambda table, key: FakeRegion()
+
+        gc.disable()
+        try:
+            with self.assertRaises(RecoverableException):
+                self.client._mutate('table', 'key', {'cf': {}}, rq_type)
+            self.assertEqual(len(built), MAX_REQUEST_ATTEMPTS)
+            self.assertEqual([r for r in built if r() is not None], [])
+        finally:
+            gc.enable()
+
+    def test_bound_leaves_room_for_a_region_reconnect(self):
+        """A broken connection is recovered by retrying, so the bound must exceed
+        the attempts a reconnect takes. Ten was too low and failed live writes."""
+        self.assertGreaterEqual(MAX_REQUEST_ATTEMPTS, 50)
+
 
 if __name__ == '__main__':
     unittest.main()
