@@ -1,6 +1,8 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
+import gc
 import unittest
+import weakref
 
 from pybase.client import MAX_REQUEST_ATTEMPTS, MainClient
 from pybase.exceptions import PyBaseException
@@ -60,6 +62,44 @@ class TestRequestRetryBounds(unittest.TestCase):
         self.client._find_hosting_region = fails_once
         self.client._mutate('table', 'key', {}, lambda region, key, values: None)
         self.assertEqual(len(calls), 2)
+
+    def test_successful_retry_does_not_retain_payload(self):
+        """A saved exception would keep the row values alive through its traceback.
+
+        The traceback references the frame that holds the values, so storing the
+        exception in a local builds a cycle that only the cyclic collector can
+        break. Re-raising in place keeps the retry path free of that reference.
+        """
+        class Sentinel(object):
+            pass
+
+        class FakeRegionClient(object):
+            def _send_request(self, rq):
+                return None
+
+        class FakeRegion(object):
+            region_client = FakeRegionClient()
+
+        calls = []
+
+        def fails_once(table, key):
+            calls.append(key)
+            if len(calls) == 1:
+                raise RecoverableException('region moved')
+            return FakeRegion()
+
+        self.client._find_hosting_region = fails_once
+        sentinel = Sentinel()
+        values = {'payload': sentinel}
+        payload_ref = weakref.ref(sentinel)
+
+        gc.disable()
+        try:
+            self.client._mutate('table', 'key', values, lambda region, key, vals: None)
+            del values, sentinel
+            self.assertIsNone(payload_ref())
+        finally:
+            gc.enable()
 
 
 if __name__ == '__main__':

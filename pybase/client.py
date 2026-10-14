@@ -165,7 +165,7 @@ class MainClient(object):
         :param filters: (optional) column filters
         :return: response with cells
         """
-        for _ in range(MAX_REQUEST_ATTEMPTS):
+        for attempt in range(MAX_REQUEST_ATTEMPTS):
             try:
                 # Step 0. Set dest_region to None so if an exception is
                 # thrown in _find_hosting_region, the exception handling
@@ -189,8 +189,8 @@ class MainClient(object):
                 # We pass dest_region in because the handling code needs to know
                 # which region or region_client it needs to reestablish.
                 e._handle_exception(self, dest_region=dest_region)
-                last_exception = e
-        raise last_exception
+                if attempt == MAX_REQUEST_ATTEMPTS - 1:
+                    raise
     
     def get_many(self, table, keys, families=None):
         """
@@ -260,7 +260,7 @@ class MainClient(object):
     def _mutate(self, table, key, values, rq_type):
         # Same exact methodology as 'get'. Because all mutate requests have
         # equivalent code I've combined them into a single function.
-        for _ in range(MAX_REQUEST_ATTEMPTS):
+        for attempt in range(MAX_REQUEST_ATTEMPTS):
             try:
                 dest_region = None
                 dest_region = self._find_hosting_region(table, key)
@@ -269,8 +269,8 @@ class MainClient(object):
                 return Result(response)
             except PyBaseException as e:
                 e._handle_exception(self, dest_region=dest_region)
-                last_exception = e
-        raise last_exception
+                if attempt == MAX_REQUEST_ATTEMPTS - 1:
+                    raise
 
     # Scan can get a bit gnarly - be prepared.
     def scan(self, table, start_key='', stop_key=None, families={}, filters=None):
