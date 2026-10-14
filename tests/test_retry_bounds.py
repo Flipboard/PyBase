@@ -16,12 +16,7 @@ class RecoverableException(PyBaseException):
 
 
 class TestRequestRetryBounds(unittest.TestCase):
-    """Requests must retry a bounded number of times rather than recursing.
-
-    The recursive implementation kept every attempt's frame, row values and
-    built request alive, so a row that never succeeded exhausted container
-    memory before Python's recursion limit was reached.
-    """
+    """Retries must stay bounded and must not accumulate memory per attempt."""
 
     def setUp(self):
         self.client = MainClient.__new__(MainClient)
@@ -64,12 +59,7 @@ class TestRequestRetryBounds(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
     def test_successful_retry_does_not_retain_payload(self):
-        """A saved exception would keep the row values alive through its traceback.
-
-        The traceback references the frame that holds the values, so storing the
-        exception in a local builds a cycle that only the cyclic collector can
-        break. Re-raising in place keeps the retry path free of that reference.
-        """
+        """A saved exception retains the values via its traceback's frame."""
         class Sentinel(object):
             pass
 
@@ -102,12 +92,7 @@ class TestRequestRetryBounds(unittest.TestCase):
             gc.enable()
 
     def test_retrying_does_not_accumulate_memory(self):
-        """Attempts must cost no memory, so the bound can be set for time alone.
-
-        The recursive implementation kept every attempt's request alive at once,
-        which is what exhausted the container. A loop frees each attempt as the
-        next one begins, so raising the bound to survive a reconnect is free.
-        """
+        """Flat memory per attempt is what makes the bound safe to raise."""
         built = []
 
         class FakeRequest(object):
@@ -138,8 +123,7 @@ class TestRequestRetryBounds(unittest.TestCase):
             gc.enable()
 
     def test_bound_leaves_room_for_a_region_reconnect(self):
-        """A broken connection is recovered by retrying, so the bound must exceed
-        the attempts a reconnect takes. Ten was too low and failed live writes."""
+        """10 sat below a reconnect's attempts and failed live writes."""
         self.assertGreaterEqual(MAX_REQUEST_ATTEMPTS, 50)
 
 

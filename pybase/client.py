@@ -40,12 +40,8 @@ from .request import request
 
 logger = logging.getLogger(__name__)
 
-# The loop below rebinds each attempt's request, so retrying costs no memory and
-# this bound exists only to stop a permanently failing row spinning forever. Keep
-# it well above the handful of attempts a region reconnect needs: _handle_exception
-# reestablishes the client without sleeping, so a connection broken mid-write is
-# recovered by retrying, and too low a bound turns a recoverable broken pipe into
-# a failed write.
+# Stops a permanently failing row spinning; not a memory limit, since the loop
+# frees each attempt. Must exceed a region reconnect's attempts: 10 did not.
 MAX_REQUEST_ATTEMPTS = 100
 
 
@@ -170,27 +166,16 @@ class MainClient(object):
         """
         for attempt in range(MAX_REQUEST_ATTEMPTS):
             try:
-                # Step 0. Set dest_region to None so if an exception is
-                # thrown in _find_hosting_region, the exception handling
-                # doesn't break trying to reference dest_region.
+                # Bound before the call so the except block can read it even when
+                # _find_hosting_region is what threw.
                 dest_region = None
-                # Step 1. Figure out where to send it.
                 dest_region = self._find_hosting_region(table, key)
-                # Step 2. Build the appropriate pb message.
                 rq = request.get_request(dest_region, key, families, filters)
-                # Step 3. Send the message and twiddle our thumbs.
                 response = dest_region.region_client._send_request(rq)
-                # Step 4. Success.
                 return Result(response)
             except PyBaseException as e:
-                # Step X. Houston, we have an error. The cool thing about how
-                # this is coded is that exceptions know how to handle themselves.
-                # All we need to do is call _handle_exception and everything should
-                # be happy! If it cannot handle itself (unrecoverable) then it will
-                # re-raise the exception in the handle method and we'll die too.
-                #
-                # We pass dest_region in because the handling code needs to know
-                # which region or region_client it needs to reestablish.
+                # Reestablishes the region client so the next attempt can succeed,
+                # or re-raises here if the error is unrecoverable.
                 e._handle_exception(self, dest_region=dest_region)
                 if attempt == MAX_REQUEST_ATTEMPTS - 1:
                     raise
@@ -261,8 +246,7 @@ class MainClient(object):
         return self._mutate(table, key, values, request.increment_request)
 
     def _mutate(self, table, key, values, rq_type):
-        # Same exact methodology as 'get'. Because all mutate requests have
-        # equivalent code I've combined them into a single function.
+        # Shared by put/delete/append/increment; same retry shape as 'get'.
         for attempt in range(MAX_REQUEST_ATTEMPTS):
             try:
                 dest_region = None
