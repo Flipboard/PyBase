@@ -128,7 +128,15 @@ class Client(object):
         to_send += serialized_header + rpc_length_bytes + serialized_rpc
 
         # send and receive the request
-        future = self.thread_pool.submit(self.send_and_receive_rpc, my_id, rq, to_send)
+        try:
+            future = self.thread_pool.submit(self.send_and_receive_rpc, my_id, rq, to_send)
+        except RuntimeError:
+            # Retired between the region lookup and this submit; surface it as a
+            # region failure so the caller retries instead of dying on a
+            # RuntimeError the retry handlers do not catch.
+            if self.shutting_down:
+                raise RegionServerException(region_client=self)
+            raise
         if _async:
             return future
         try:

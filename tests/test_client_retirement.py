@@ -73,5 +73,43 @@ class TestClientRetirement(unittest.TestCase):
         self.assertEqual(len(exceptions._buckets), 0)
 
 
+    def test_bucket_round_trip_claims_and_releases_one_semaphore(self):
+        """Covers the claim/release round trip. The interleaving that motivated
+        making the claim atomic is not reproduced here; see the PR discussion."""
+        exceptions._buckets.clear()
+        client = _region_client('rs1', '16020')
+        first = RegionServerException(region_client=client)
+        second = RegionServerException(region_client=client)
+
+        self.assertTrue(exceptions._let_one_through(first, client))
+        # Owner finishes and retires the bucket.
+        exceptions._let_all_through(first, client)
+        # A later caller must claim a live bucket, not the retired semaphore.
+        self.assertTrue(exceptions._let_one_through(second, client))
+        claimed = exceptions._buckets[(second.__class__.__name__, client)]
+        exceptions._let_all_through(second, client)
+        self.assertEqual(claimed._value, 1, 'released a different semaphore')
+
+    def test_submit_after_retirement_is_a_region_failure(self):
+        """RuntimeError from a retired pool would bypass the retry handlers."""
+        client = _region_client('rs1', '16020', with_pool=True)
+        client.call_lock = threading.Lock()
+        client.call_id = 0
+        client.thread_pool_timeout = 5
+
+        class FakePb(object):
+            def SerializeToString(self):
+                return b'x'
+
+        class FakeRequest(object):
+            type = 'Get'
+            pb = FakePb()
+
+        client.close()
+
+        with self.assertRaises(RegionServerException):
+            client._send_request(FakeRequest())
+
+
 if __name__ == '__main__':
     unittest.main()

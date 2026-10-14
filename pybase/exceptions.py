@@ -271,13 +271,14 @@ _buckets_lock = Lock()
 # _let_all_through.
 def _let_one_through(exception, data):
     my_tuple = (exception.__class__.__name__, data)
-    # Grab my relevant semaphore.
+    # Claim under the same lock that guards the map, or the bucket can be retired
+    # between lookup and acquisition and this caller ends up owning a semaphore
+    # nobody will ever release, stranding everyone waiting on it.
     _buckets_lock.acquire()
     my_sem = _buckets[my_tuple]
+    claimed = my_sem.acquire(blocking=False)
     _buckets_lock.release()
-    # Try to non-blocking acquire my semaphore. If I get it, woohoo! Otherwise
-    # get comfy because we're sitting on the semaphore.
-    if my_sem.acquire(blocking=False):
+    if claimed:
         # Look at me - I'm the captain now.
         return True
     else:
