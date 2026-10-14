@@ -295,6 +295,9 @@ def _let_all_through(exception, data):
     _buckets_lock.acquire()
     my_sem = _buckets[my_tuple]
     my_sem.release()
+    # The key holds the region client, so a retained bucket outlives every
+    # retired client. Waiters already hold their own reference to the semaphore.
+    _buckets.pop(my_tuple, None)
     _buckets_lock.release()
 
 

@@ -514,10 +514,15 @@ class MainClient(object):
         # our cache, delete the reverse lookup entry and close the client
         # clearing up any file descriptors.
         with self._cache_lock:
+            key = region_cache_key(region_client.host, region_client.port)
+            if self.reverse_client_cache.get(key) is not region_client:
+                # A healthy client already took this address, so a late failure
+                # from the old one must retire it without evicting its successor.
+                region_client.close()
+                return
             for reg in region_client.regions:
                 self._delete_from_region_cache(reg.table, reg.start_key)
-            self.reverse_client_cache.pop(
-                region_cache_key(region_client.host, region_client.port), None)
+            self.reverse_client_cache.pop(key, None)
             region_client.close()
 
     def _purge_region(self, reg):

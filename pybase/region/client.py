@@ -237,6 +237,10 @@ class Client(object):
         self.shutting_down = True
         for sock in self.sock_pool:
             sock.close()
+        if self.thread_pool is not None:
+            # Closing sockets leaves the pool's workers running, so a retired
+            # client would strand its threads.
+            self.thread_pool.shutdown(wait=False)
         # We could still have greenlets waiting in the bad_call_id pools! Wake
         # them up so they can fail to error handling as well.
 
