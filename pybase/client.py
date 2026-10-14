@@ -40,6 +40,11 @@ from .request import request
 
 logger = logging.getLogger(__name__)
 
+# Retries are bounded because these requests used to retry by recursing: each
+# failed attempt kept its frame, row values and built request alive, so a row
+# that never succeeds exhausted memory long before Python's recursion limit.
+MAX_REQUEST_ATTEMPTS = 10
+
 
 class MainClient(object):
 
@@ -160,31 +165,32 @@ class MainClient(object):
         :param filters: (optional) column filters
         :return: response with cells
         """
-        try:
-            # Step 0. Set dest_region to None so if an exception is
-            # thrown in _find_hosting_region, the exception handling
-            # doesn't break trying to reference dest_region.
-            dest_region = None
-            # Step 1. Figure out where to send it.
-            dest_region = self._find_hosting_region(table, key)
-            # Step 2. Build the appropriate pb message.
-            rq = request.get_request(dest_region, key, families, filters)
-            # Step 3. Send the message and twiddle our thumbs.
-            response = dest_region.region_client._send_request(rq)
-            # Step 4. Success.
-            return Result(response)
-        except PyBaseException as e:
-            # Step X. Houston, we have an error. The cool thing about how
-            # this is coded is that exceptions know how to handle themselves.
-            # All we need to do is call _handle_exception and everything should
-            # be happy! If it cannot handle itself (unrecoverable) then it will
-            # re-raise the exception in the handle method and we'll die too.
-            #
-            # We pass dest_region in because the handling code needs to know
-            # which region or region_client it needs to reestablish.
-            e._handle_exception(self, dest_region=dest_region)
-            # Everything should be dandy now. Repeat the request!
-            return self.get(table, key, families=families, filters=filters)
+        for attempt in range(MAX_REQUEST_ATTEMPTS):
+            try:
+                # Step 0. Set dest_region to None so if an exception is
+                # thrown in _find_hosting_region, the exception handling
+                # doesn't break trying to reference dest_region.
+                dest_region = None
+                # Step 1. Figure out where to send it.
+                dest_region = self._find_hosting_region(table, key)
+                # Step 2. Build the appropriate pb message.
+                rq = request.get_request(dest_region, key, families, filters)
+                # Step 3. Send the message and twiddle our thumbs.
+                response = dest_region.region_client._send_request(rq)
+                # Step 4. Success.
+                return Result(response)
+            except PyBaseException as e:
+                # Step X. Houston, we have an error. The cool thing about how
+                # this is coded is that exceptions know how to handle themselves.
+                # All we need to do is call _handle_exception and everything should
+                # be happy! If it cannot handle itself (unrecoverable) then it will
+                # re-raise the exception in the handle method and we'll die too.
+                #
+                # We pass dest_region in because the handling code needs to know
+                # which region or region_client it needs to reestablish.
+                e._handle_exception(self, dest_region=dest_region)
+                if attempt == MAX_REQUEST_ATTEMPTS - 1:
+                    raise
     
     def get_many(self, table, keys, families=None):
         """
@@ -254,15 +260,17 @@ class MainClient(object):
     def _mutate(self, table, key, values, rq_type):
         # Same exact methodology as 'get'. Because all mutate requests have
         # equivalent code I've combined them into a single function.
-        try:
-            dest_region = None
-            dest_region = self._find_hosting_region(table, key)
-            rq = rq_type(dest_region, key, values)
-            response = dest_region.region_client._send_request(rq)
-            return Result(response)
-        except PyBaseException as e:
-            e._handle_exception(self, dest_region=dest_region)
-            return self._mutate(table, key, values, rq_type)
+        for attempt in range(MAX_REQUEST_ATTEMPTS):
+            try:
+                dest_region = None
+                dest_region = self._find_hosting_region(table, key)
+                rq = rq_type(dest_region, key, values)
+                response = dest_region.region_client._send_request(rq)
+                return Result(response)
+            except PyBaseException as e:
+                e._handle_exception(self, dest_region=dest_region)
+                if attempt == MAX_REQUEST_ATTEMPTS - 1:
+                    raise
 
     # Scan can get a bit gnarly - be prepared.
     def scan(self, table, start_key='', stop_key=None, families={}, filters=None):
