@@ -177,6 +177,9 @@ class TestSendRequestReleasesFuture(unittest.TestCase):
         try:
             for _ in range(10):
                 one_attempt()
+            # result() can return before the worker drops its work item, which also
+            # holds the request, so join the pool to measure persistent retention.
+            client.thread_pool.shutdown(wait=True)
             retained = len([r for r in refs if r() is not None])
             self.assertEqual(retained, 0, '%s of %s requests retained' % (retained, len(refs)))
         finally:
