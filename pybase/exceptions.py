@@ -23,6 +23,8 @@ from time import sleep, time
 
 from builtins import str
 
+from .helpers import region_cache_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,9 +77,8 @@ class RegionServerException(PyBaseException):
         # region_client not set? Then host/port must have been. Fetch the
         # client given the host, port
         if self.region_client is None:
-            concat = self.host + b":" + self.port
             self.region_client = main_client.reverse_client_cache.get(
-                concat, None)
+                region_cache_key(self.host, self.port), None)
 
         # we don't care about secondaries, move on
         if (self.region_client and self.region_client.secondary) or self.secondary:
@@ -90,7 +91,8 @@ class RegionServerException(PyBaseException):
                 if self.region_client is not None:
                     # We need to make sure that a different thread hasn't already
                     # reestablished to this region.
-                    loc = self.region_client.host + ":" + self.region_client.port
+                    loc = region_cache_key(self.region_client.host,
+                                           self.region_client.port)
                     if loc in main_client.reverse_client_cache:
                         # We're the first in and it's our job to kill the client.
                         # Purge it.
@@ -102,8 +104,7 @@ class RegionServerException(PyBaseException):
                         main_client._purge_client(self.region_client)
                         # Sleep for an arbitrary amount of time. If this returns
                         # False then we've hit our max retry threshold. Die.
-                        key = self.region_client.host + ":" + self.region_client.port
-                        if not _dynamic_sleep(self, key):
+                        if not _dynamic_sleep(self, loc):
                             raise self
             finally:
                 # Notify all the other threads to wake up because we've handled the

@@ -35,6 +35,7 @@ from .exceptions import (
     ZookeeperException
 )
 from .filters import _to_filter
+from .helpers import region_cache_key
 from .region.region import region_from_cell
 from .request import request
 
@@ -456,8 +457,8 @@ class MainClient(object):
             elif cell.qualifier == b"server":
                 # Grab the host, port of the Region Server that this region is
                 # hosted on.
-                server_loc = cell.value
                 host, port = cell.value.split(b':')
+                server_loc = region_cache_key(host, port)
             else:
                 continue
         # Do we have an existing client for this region server already?
@@ -516,7 +517,7 @@ class MainClient(object):
             for reg in region_client.regions:
                 self._delete_from_region_cache(reg.table, reg.start_key)
             self.reverse_client_cache.pop(
-                region_client.host + b":" + region_client.port, None)
+                region_cache_key(region_client.host, region_client.port), None)
             region_client.close()
 
     def _purge_region(self, reg):
