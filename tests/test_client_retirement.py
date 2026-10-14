@@ -72,7 +72,6 @@ class TestClientRetirement(unittest.TestCase):
             exceptions._let_all_through(error, client)
         self.assertEqual(len(exceptions._buckets), 0)
 
-
     def test_bucket_round_trip_claims_and_releases_one_semaphore(self):
         """Covers the claim/release round trip. The interleaving that motivated
         making the claim atomic is not reproduced here; see the PR discussion."""
