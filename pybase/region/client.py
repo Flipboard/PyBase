@@ -131,7 +131,13 @@ class Client(object):
         future = self.thread_pool.submit(self.send_and_receive_rpc, my_id, rq, to_send)
         if _async:
             return future
-        return future.result(timeout=self.thread_pool_timeout)
+        try:
+            return future.result(timeout=self.thread_pool_timeout)
+        finally:
+            # A failed Future holds its exception, whose traceback references this
+            # frame, which references the Future. Dropping the local breaks that
+            # cycle so a retried request is freed without waiting for cyclic gc.
+            del future
 
     # Sending an RPC, listens for the response and builds the correct pbResponse object.
     #
