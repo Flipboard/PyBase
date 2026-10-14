@@ -94,14 +94,18 @@ class TestRequestRetryBounds(unittest.TestCase):
             gc.enable()
 
     def test_retrying_does_not_accumulate_memory(self):
-        """The loop itself holds no attempt; see the sender test for the Future."""
+        """At most one attempt is live at a time; recursion held all of them."""
         built = []
+        live_at_build = []
 
         class FakeRequest(object):
             def __init__(self):
                 self.payload = bytearray(1000000)
 
         def rq_type(region, key, values):
+            # Sampled here, not after unwinding: recursion holds every attempt at
+            # peak and frees them all on the way out, which a post-hoc check misses.
+            live_at_build.append(len([r for r in built if r() is not None]))
             request = FakeRequest()
             built.append(weakref.ref(request))
             return request
@@ -120,6 +124,8 @@ class TestRequestRetryBounds(unittest.TestCase):
             with self.assertRaises(RecoverableException):
                 self.client._mutate('table', 'key', {'cf': {}}, rq_type)
             self.assertEqual(len(built), MAX_REQUEST_ATTEMPTS)
+            # One previous request may still be bound while the next is built.
+            self.assertLessEqual(max(live_at_build), 1)
             self.assertEqual([r for r in built if r() is not None], [])
         finally:
             gc.enable()
