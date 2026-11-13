@@ -141,6 +141,38 @@ class TestDiscoveryAndRetirement(unittest.TestCase):
         self.assertEqual(sorted(cached.regions, key=repr), sorted([other, child], key=repr))
         self.assertEqual(sorted(_cached_clients(main), key=id), sorted([cached, cached], key=id))
 
+    def test_displaced_client_with_no_regions_left_is_retired(self):
+        """The region moved to another server and it was the old client's only
+        cached region: keeping that client would leak its sockets and threads."""
+        old_key = region_cache_key(b'rs0', b'16020')
+        old = _region_client('rs0', '16020')
+        main = _main_with({old_key: old})
+        moved = FakeRegion(b't', b'a', b'z')
+        moved.region_client = old
+        main._add_to_region_cache(moved)
+
+        reg = self._discover(main, b'a', b'z')
+
+        self.assertTrue(old.shutting_down)
+        self.assertNotIn(old_key, main.reverse_client_cache)
+        self.assertIs(main.reverse_client_cache[self.key], reg.region_client)
+        self.assertEqual(_cached_clients(main), [reg.region_client])
+
+    def test_displaced_client_with_other_regions_stays_open(self):
+        old_key = region_cache_key(b'rs0', b'16020')
+        old = _region_client('rs0', '16020')
+        main = _main_with({old_key: old})
+        for start, stop in ((b'a', b'm'), (b'm', b'z')):
+            r = FakeRegion(b't', start, stop)
+            r.region_client = old
+            main._add_to_region_cache(r)
+
+        self._discover(main, b'a', b'm')
+
+        self.assertFalse(old.shutting_down)
+        self.assertIs(main.reverse_client_cache[old_key], old)
+        self.assertEqual(len(old.regions), 1)
+
     def test_failed_connect_raises_region_server_exception(self):
         region.NewClient = lambda *a, **k: None
         main = _main_with({})

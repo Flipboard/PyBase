@@ -125,7 +125,7 @@ class MainClient(object):
         # Get all overlapping regions (overlapping == stale)
         overlapping_regions = self.region_cache[start_key:stop_key]
         # Detach the stale regions from their clients.
-        self._forget_old_regions(overlapping_regions)
+        displaced = self._forget_old_regions(overlapping_regions)
         # Remove the overlapping regions.
         self.region_cache.remove_overlap(start_key, stop_key)
         # Insert my region.
@@ -133,6 +133,16 @@ class MainClient(object):
         # Add this region to the region_client's internal
         # list of all the regions it serves.
         new_region.region_client.regions.append(new_region)
+        # A displaced client that no longer serves any cached region would
+        # otherwise sit in reverse_client_cache with its sockets and executor
+        # open until MainClient.close(). Retire it; a later region on that
+        # server simply reconnects.
+        for client in displaced:
+            if client is not new_region.region_client and not client.regions:
+                key = region_cache_key(client.host, client.port)
+                if self.reverse_client_cache.get(key) is client:
+                    del self.reverse_client_cache[key]
+                client.close()
 
     def _get_from_region_cache(self, table, key):
         # Only let one person touch the cache at once.
@@ -519,12 +529,18 @@ class MainClient(object):
         # A stale region says nothing about its region server, which usually
         # still serves every other region cached against the same client.
         # Closing that client here left those regions pointing at a dead
-        # client, so only drop the stale regions from the client's list.
+        # client, so only drop the stale regions from the client's list and
+        # hand the touched clients back for the caller to retire if empty.
+        displaced = []
         for reg in overlapping_region_intervals:
+            client = reg.data.region_client
             try:
-                reg.data.region_client.regions.remove(reg.data)
+                client.regions.remove(reg.data)
             except ValueError:
                 pass
+            if client not in displaced:
+                displaced.append(client)
+        return displaced
 
     def _purge_client(self, region_client):
         # Given a client to close, purge all of it's known hosted regions from
