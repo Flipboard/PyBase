@@ -23,6 +23,8 @@ from time import sleep, time
 
 from builtins import str
 
+from .helpers import region_cache_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,9 +77,8 @@ class RegionServerException(PyBaseException):
         # region_client not set? Then host/port must have been. Fetch the
         # client given the host, port
         if self.region_client is None:
-            concat = self.host + b":" + self.port
             self.region_client = main_client.reverse_client_cache.get(
-                concat, None)
+                region_cache_key(self.host, self.port), None)
 
         # we don't care about secondaries, move on
         if (self.region_client and self.region_client.secondary) or self.secondary:
@@ -90,7 +91,8 @@ class RegionServerException(PyBaseException):
                 if self.region_client is not None:
                     # We need to make sure that a different thread hasn't already
                     # reestablished to this region.
-                    loc = self.region_client.host + ":" + self.region_client.port
+                    loc = region_cache_key(self.region_client.host,
+                                           self.region_client.port)
                     if loc in main_client.reverse_client_cache:
                         # We're the first in and it's our job to kill the client.
                         # Purge it.
@@ -102,8 +104,7 @@ class RegionServerException(PyBaseException):
                         main_client._purge_client(self.region_client)
                         # Sleep for an arbitrary amount of time. If this returns
                         # False then we've hit our max retry threshold. Die.
-                        key = self.region_client.host + ":" + self.region_client.port
-                        if not _dynamic_sleep(self, key):
+                        if not _dynamic_sleep(self, loc):
                             raise self
             finally:
                 # Notify all the other threads to wake up because we've handled the
@@ -270,13 +271,14 @@ _buckets_lock = Lock()
 # _let_all_through.
 def _let_one_through(exception, data):
     my_tuple = (exception.__class__.__name__, data)
-    # Grab my relevant semaphore.
+    # Claim under the same lock that guards the map, or the bucket can be retired
+    # between lookup and acquisition and this caller ends up owning a semaphore
+    # nobody will ever release, stranding everyone waiting on it.
     _buckets_lock.acquire()
     my_sem = _buckets[my_tuple]
+    claimed = my_sem.acquire(blocking=False)
     _buckets_lock.release()
-    # Try to non-blocking acquire my semaphore. If I get it, woohoo! Otherwise
-    # get comfy because we're sitting on the semaphore.
-    if my_sem.acquire(blocking=False):
+    if claimed:
         # Look at me - I'm the captain now.
         return True
     else:
@@ -294,6 +296,9 @@ def _let_all_through(exception, data):
     _buckets_lock.acquire()
     my_sem = _buckets[my_tuple]
     my_sem.release()
+    # The key holds the region client, so a retained bucket outlives every
+    # retired client. Waiters already hold their own reference to the semaphore.
+    _buckets.pop(my_tuple, None)
     _buckets_lock.release()
 
 

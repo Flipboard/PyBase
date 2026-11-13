@@ -128,10 +128,24 @@ class Client(object):
         to_send += serialized_header + rpc_length_bytes + serialized_rpc
 
         # send and receive the request
-        future = self.thread_pool.submit(self.send_and_receive_rpc, my_id, rq, to_send)
+        try:
+            future = self.thread_pool.submit(self.send_and_receive_rpc, my_id, rq, to_send)
+        except RuntimeError:
+            # Retired between the region lookup and this submit; surface it as a
+            # region failure so the caller retries instead of dying on a
+            # RuntimeError the retry handlers do not catch.
+            if self.shutting_down:
+                raise RegionServerException(region_client=self)
+            raise
         if _async:
             return future
-        return future.result(timeout=self.thread_pool_timeout)
+        try:
+            return future.result(timeout=self.thread_pool_timeout)
+        finally:
+            # A failed Future holds its exception, whose traceback references this
+            # frame, which references the Future. Dropping the local breaks that
+            # cycle so a retried request is freed without waiting for cyclic gc.
+            del future
 
     # Sending an RPC, listens for the response and builds the correct pbResponse object.
     #
@@ -231,6 +245,10 @@ class Client(object):
         self.shutting_down = True
         for sock in self.sock_pool:
             sock.close()
+        if self.thread_pool is not None:
+            # Closing sockets leaves the pool's workers running, so a retired
+            # client would strand its threads.
+            self.thread_pool.shutdown(wait=False)
         # We could still have greenlets waiting in the bad_call_id pools! Wake
         # them up so they can fail to error handling as well.
 

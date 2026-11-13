@@ -3,6 +3,8 @@ from __future__ import absolute_import, print_function, unicode_literals
 import gc
 import unittest
 import weakref
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 from pybase.client import MAX_REQUEST_ATTEMPTS, MainClient
 from pybase.exceptions import PyBaseException
@@ -16,12 +18,7 @@ class RecoverableException(PyBaseException):
 
 
 class TestRequestRetryBounds(unittest.TestCase):
-    """Requests must retry a bounded number of times rather than recursing.
-
-    The recursive implementation kept every attempt's frame, row values and
-    built request alive, so a row that never succeeded exhausted container
-    memory before Python's recursion limit was reached.
-    """
+    """Retries must stay bounded and must not accumulate memory per attempt."""
 
     def setUp(self):
         self.client = MainClient.__new__(MainClient)
@@ -64,12 +61,7 @@ class TestRequestRetryBounds(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
     def test_successful_retry_does_not_retain_payload(self):
-        """A saved exception would keep the row values alive through its traceback.
-
-        The traceback references the frame that holds the values, so storing the
-        exception in a local builds a cycle that only the cyclic collector can
-        break. Re-raising in place keeps the retry path free of that reference.
-        """
+        """A saved exception retains the values via its traceback's frame."""
         class Sentinel(object):
             pass
 
@@ -98,6 +90,98 @@ class TestRequestRetryBounds(unittest.TestCase):
             self.client._mutate('table', 'key', values, lambda region, key, vals: None)
             del values, sentinel
             self.assertIsNone(payload_ref())
+        finally:
+            gc.enable()
+
+    def test_retrying_does_not_accumulate_memory(self):
+        """At most one attempt is live at a time; recursion held all of them."""
+        built = []
+        live_at_build = []
+
+        class FakeRequest(object):
+            def __init__(self):
+                self.payload = bytearray(1000000)
+
+        def rq_type(region, key, values):
+            # Sampled here, not after unwinding: recursion holds every attempt at
+            # peak and frees them all on the way out, which a post-hoc check misses.
+            live_at_build.append(len([r for r in built if r() is not None]))
+            request = FakeRequest()
+            built.append(weakref.ref(request))
+            return request
+
+        class FakeRegionClient(object):
+            def _send_request(self, rq):
+                raise RecoverableException('broken pipe')
+
+        class FakeRegion(object):
+            region_client = FakeRegionClient()
+
+        self.client._find_hosting_region = lambda table, key: FakeRegion()
+
+        gc.disable()
+        try:
+            with self.assertRaises(RecoverableException):
+                self.client._mutate('table', 'key', {'cf': {}}, rq_type)
+            self.assertEqual(len(built), MAX_REQUEST_ATTEMPTS)
+            # One previous request may still be bound while the next is built.
+            self.assertLessEqual(max(live_at_build), 1)
+            self.assertEqual([r for r in built if r() is not None], [])
+        finally:
+            gc.enable()
+
+    def test_bound_leaves_room_for_a_region_reconnect(self):
+        """10 sat below a reconnect's attempts and failed live writes."""
+        self.assertGreaterEqual(MAX_REQUEST_ATTEMPTS, 50)
+
+
+class TestSendRequestReleasesFuture(unittest.TestCase):
+    """A failed Future holds its request, so retries must not wait on cyclic gc."""
+
+    def test_failed_request_is_released_without_cyclic_gc(self):
+        from pybase.region.client import Client
+
+        client = Client.__new__(Client)
+        client.call_lock = Lock()
+        client.call_id = 0
+        client.thread_pool = ThreadPoolExecutor(max_workers=2)
+        client.thread_pool_timeout = 5
+        client.host, client.port = b'host', b'1'
+
+        def always_fails(call_id, rq, to_send):
+            raise RecoverableException('broken pipe')
+
+        client.send_and_receive_rpc = always_fails
+
+        class FakePb(object):
+            def SerializeToString(self):
+                return b'x' * 100000
+
+        class FakeRequest(object):
+            type = 'Get'
+            pb = FakePb()
+
+        refs = []
+
+        def one_attempt():
+            # The request must stay local to a frame that only the traceback can
+            # reach, as it is in production; deleting it here would hide the leak.
+            request = FakeRequest()
+            refs.append(weakref.ref(request))
+            try:
+                client._send_request(request)
+            except RecoverableException:
+                pass
+
+        gc.disable()
+        try:
+            for _ in range(10):
+                one_attempt()
+            # result() can return before the worker drops its work item, which also
+            # holds the request, so join the pool to measure persistent retention.
+            client.thread_pool.shutdown(wait=True)
+            retained = len([r for r in refs if r() is not None])
+            self.assertEqual(retained, 0, '%s of %s requests retained' % (retained, len(refs)))
         finally:
             gc.enable()
 
