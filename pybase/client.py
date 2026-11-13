@@ -104,6 +104,13 @@ class MainClient(object):
     """
 
     def _add_to_region_cache(self, new_region):
+        # Only let one person touch the cache at once.
+        with self._cache_lock:
+            self._add_to_region_cache_locked(new_region)
+
+    def _add_to_region_cache_locked(self, new_region):
+        # Caller holds _cache_lock, so discovery can select a client and insert
+        # its region in the same critical section as retirement.
         stop_key = new_region.stop_key
         if stop_key == b'':
             # This is hacky but our interval tree requires hard interval stops.
@@ -115,19 +122,17 @@ class MainClient(object):
         start_key = new_region.table + b',' + new_region.start_key
         stop_key = new_region.table + b',' + stop_key
 
-        # Only let one person touch the cache at once.
-        with self._cache_lock:
-            # Get all overlapping regions (overlapping == stale)
-            overlapping_regions = self.region_cache[start_key:stop_key]
-            # Close the overlapping regions.
-            self._close_old_regions(overlapping_regions)
-            # Remove the overlapping regions.
-            self.region_cache.remove_overlap(start_key, stop_key)
-            # Insert my region.
-            self.region_cache[start_key:stop_key] = new_region
-            # Add this region to the region_client's internal
-            # list of all the regions it serves.
-            new_region.region_client.regions.append(new_region)
+        # Get all overlapping regions (overlapping == stale)
+        overlapping_regions = self.region_cache[start_key:stop_key]
+        # Detach the stale regions from their clients.
+        self._forget_old_regions(overlapping_regions)
+        # Remove the overlapping regions.
+        self.region_cache.remove_overlap(start_key, stop_key)
+        # Insert my region.
+        self.region_cache[start_key:stop_key] = new_region
+        # Add this region to the region_client's internal
+        # list of all the regions it serves.
+        new_region.region_client.regions.append(new_region)
 
     def _get_from_region_cache(self, table, key):
         # Only let one person touch the cache at once.
@@ -461,28 +466,37 @@ class MainClient(object):
                 server_loc = region_cache_key(host, port)
             else:
                 continue
-        # Do we have an existing client for this region server already?
-        if server_loc and server_loc in self.reverse_client_cache:
-            # If so, grab it!
-            new_region.region_client = self.reverse_client_cache[server_loc]
-        else:
-            # Otherwise we need to create a new region client instance.
-            new_client = region.NewClient(host, port, self.pool_size,
-                                          secondary=self.secondary, call_timeout=self.call_timeout)
-            if new_client is None:
+        self._attach_region_to_live_client(new_region, host, port, server_loc)
+        logger.info("Successfully discovered new region %s", new_region)
+        return new_region
+
+    def _attach_region_to_live_client(self, new_region, host, port, server_loc):
+        # Selecting the client and inserting the region happen under _cache_lock
+        # together, so _purge_client cannot retire the client in between and
+        # leave a cached region pointing at a closed client. Connecting is slow
+        # and stays outside the lock; if another thread connected first, or
+        # retired the cached client while we connected, the second pass sees it.
+        candidate = None
+        while True:
+            with self._cache_lock:
+                cached = self.reverse_client_cache.get(server_loc)
+                live = cached if cached is not None and not cached.shutting_down else None
+                if live is None and candidate is not None:
+                    logger.info("Created new Client for RegionServer %s", server_loc)
+                    self.reverse_client_cache[server_loc] = candidate
+                    live = candidate
+                if live is not None:
+                    if candidate is not None and candidate is not live:
+                        candidate.close()
+                    new_region.region_client = live
+                    self._add_to_region_cache_locked(new_region)
+                    return
+            candidate = region.NewClient(host, port, self.pool_size,
+                                         secondary=self.secondary, call_timeout=self.call_timeout)
+            if candidate is None:
                 # Welp. We can't connect to the server that the Master
                 # supplied. Raise an exception.
                 raise RegionServerException(host=host, port=port, secondary=self.secondary)
-            logger.info("Created new Client for RegionServer %s", server_loc)
-            # Add it to the host,port -> instance of region client map.
-            self.reverse_client_cache[server_loc] = new_client
-            # Attach the region_client to the region.
-            new_region.region_client = new_client
-        # Region's set up! Add this puppy to the cache so future requests can
-        # use it.
-        self._add_to_region_cache(new_region)
-        logger.info("Successfully discovered new region %s", new_region)
-        return new_region
 
     def update_master_client(self, ip, port):
         if self.master_client:
@@ -501,13 +515,16 @@ class MainClient(object):
         HERE LAY THE MISCELLANEOUS
     """
 
-    def _close_old_regions(self, overlapping_region_intervals):
-        # Loop over the regions to close and close whoever their
-        # attached client is.
-        #
-        # TODO: ...should we really be killing a client unneccessarily?
+    def _forget_old_regions(self, overlapping_region_intervals):
+        # A stale region says nothing about its region server, which usually
+        # still serves every other region cached against the same client.
+        # Closing that client here left those regions pointing at a dead
+        # client, so only drop the stale regions from the client's list.
         for reg in overlapping_region_intervals:
-            reg.data.region_client.close()
+            try:
+                reg.data.region_client.regions.remove(reg.data)
+            except ValueError:
+                pass
 
     def _purge_client(self, region_client):
         # Given a client to close, purge all of it's known hosted regions from
